@@ -48,3 +48,13 @@ def test_successful_tutor_verification_rebuilds_evidence_and_recommendation(clie
  assert newton['transfer_score']==1
  assert not any(g['concept_id']==concept_id for g in dashboard['gaps'])
  assert dashboard['recommendation']['action_type']=='assessment'
+
+
+def test_dashboard_uses_weighted_performance_and_matching_calibration_population(client):
+ headers,_,_=remediation_setup(client)
+ dashboard=client.get('/api/student/dashboard',headers=headers).json()
+ newton=next(a for a in dashboard['assessments'] if a['concept_name']=="Newton's Laws")
+ assert newton['performance']==pytest.approx(.585)
+ assert dashboard['overall']['confidence']==pytest.approx(.8)
+ assert dashboard['overall']['performance']==pytest.approx(.7425)
+ assert dashboard['overall']['calibration_gap']==pytest.approx(.0575)
