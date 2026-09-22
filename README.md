@@ -12,8 +12,8 @@ A correct selected answer can hide a fragile mental model. CalibrateAI continues
 - Persistent SQLite attempts with confidence, response time, answer changes, explanations, assessments, and explainable gaps
 - Explicit adaptive diagnostic sequence with recognition, recall, conflict, transfer, and contextual “Why this task?” messages
 - Configurable performance/mastery weights, calibration gap, risk classification, historical smoothing, and multi-signal gap detection
-- Structured AI abstraction, realistic no-key mock provider, OpenAI-compatible real provider, timeout/error fallback, and six external prompt templates
-- Socratic eight-step tutor, responsive concept dependency map, Recharts dashboards, teacher concept/student analytics
+- Structured AI abstraction, evidence-aware no-key mock provider, OpenAI-compatible real provider, validated JSON with repair, timeout/error fallback, and external prompt templates
+- Adaptive multi-turn Socratic tutor with changed-condition verification, responsive concept dependency map, Recharts dashboards, and teacher concept/student analytics
 - Loading, error, empty, validation, retry, mobile navigation, and accessible form states
 - 3 subjects, 30 concepts, 120 questions, demo history, and test coverage for engines, auth, authorization, dashboard, and mock AI
 
@@ -90,7 +90,17 @@ Sign in as the student, choose Physics → Newton's Laws, and complete standard,
 
 ## Demo Mode and AI configuration
 
-With no `AI_API_KEY`, the entire flow uses `MockAIProvider` and responses identify Demo AI mode. With a key, `RealAIProvider` requests structured JSON from an OpenAI-compatible endpoint. Network errors, timeouts, invalid payloads, or provider failures fall back to the mock provider, so diagnostics remain available. Keys stay on the backend.
+With no `AI_API_KEY`, the entire flow uses `MockAIProvider` and the Tutor shows Demo mode. With a key, `RealAIProvider` requests schema-validated JSON from an OpenAI-compatible endpoint; malformed output receives one repair attempt. Network errors, timeouts, invalid payloads, or provider failures fall back to the evidence-aware mock provider, so diagnostics remain available. Keys stay on the backend.
+
+For the hosted OpenAI API, add these server-side lines to the repository-root `.env` (substitute your own secret):
+
+```dotenv
+AI_API_KEY=<YOUR_OPENAI_API_KEY>
+AI_BASE_URL=https://api.openai.com/v1
+AI_MODEL=gpt-4o-mini
+```
+
+Restart with `docker compose down && docker compose up --build -d`. Sign in as a student, open **AI Tutor**, send a reasoning response, and confirm the status beside the concept changes to **Real AI connected**. A **Demo mode** status means no key is configured or the configured provider was unavailable for that response. Do not put the key in `frontend/`, browser storage, `VITE_API_URL`, or any variable beginning with `VITE_`.
 
 Prompt files under `backend/app/prompts/` define role, input, task, safety rules, JSON output, and examples. AI language is restricted to observable learning evidence.
 
