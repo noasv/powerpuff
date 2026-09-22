@@ -28,7 +28,7 @@ def subject(name):
 
 def gap(concept_id, severity=.8, resolved=False):
     return SimpleNamespace(
-        concept_id=concept_id, severity=severity,
+        id=concept_id * 10, concept_id=concept_id, severity=severity,
         resolved_at=NOW if resolved else None,
     )
 
@@ -99,3 +99,18 @@ def test_high_confidence_and_weak_evidence_selects_calibration():
     recommendation = rank_recommendations([row(item, "Momentum", "Physics")], [gap(1)], NOW)[0]
     assert "calibrate" in recommendation["recommended_action"].lower()
     assert "strong confidence" in recommendation["reason"].lower()
+
+
+def test_unresolved_newtons_laws_routes_to_tutor_remediation():
+    newton = assessment(2, recall=.7, transfer=.1, confidence=3, gap=0)
+    recommendation = rank_recommendations([row(newton, "Newton's Laws", "Physics")], [gap(2)], NOW)[0]
+    assert recommendation["action_type"] == "tutor_remediation"
+    assert recommendation["gap_id"] == 20
+    assert recommendation["intervention"] == "transfer_practice"
+
+
+def test_risk_without_unresolved_gap_routes_to_reassessment():
+    newton = assessment(2, risk="FRAGILE")
+    recommendation = rank_recommendations([row(newton, "Newton's Laws", "Physics")], [], NOW)[0]
+    assert recommendation["action_type"] == "assessment"
+    assert recommendation["intervention"] == "diagnostic_reassessment"

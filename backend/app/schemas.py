@@ -11,6 +11,7 @@ class TutorMessage(BaseModel):
     content: str = Field(min_length=1,max_length=5000)
 class TutorRequest(BaseModel):
     concept_id:int
+    gap_id:int|None=None
     message:str=Field(min_length=1,max_length=3000)
     history:list[TutorMessage]=Field(default_factory=list,max_length=40)
 class GenerateRequest(BaseModel): concept_id:int; difficulty:float=Field(default=.5,ge=0,le=1)

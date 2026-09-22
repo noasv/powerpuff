@@ -28,20 +28,20 @@ def _recency(age_days: float) -> float:
     return next((boost for days, boost in RECENCY_BOOSTS if age_days <= days), 0)
 
 
-def _intervention(assessment, concept_name: str) -> tuple[str, str]:
+def _intervention(assessment, concept_name: str) -> tuple[str, str, str]:
     demonstrated = performance(assessment.accuracy, assessment.recall_score, assessment.transfer_score, assessment.explanation_score)
     confidence = assessment.average_confidence / 5
     if confidence - demonstrated >= CALIBRATION_MISMATCH and demonstrated <= WEAK_EVIDENCE:
-        return (f"Calibrate your {concept_name} model by predicting, explaining, then checking the result.", "Your recent assessment showed strong confidence but weak demonstrated evidence.")
+        return (f"Calibrate your {concept_name} model by predicting, explaining, then checking the result.", "Your recent assessment showed strong confidence but weak demonstrated evidence.", "calibration_intervention")
     if assessment.recall_score < WEAK_EVIDENCE and assessment.recall_score <= min(assessment.transfer_score, assessment.explanation_score):
-        return (f"Practice {concept_name} with guided recall before reviewing examples.", "Your recent assessment showed that recalling the idea without prompts was difficult.")
+        return (f"Practice {concept_name} with guided recall before reviewing examples.", "Your recent assessment showed that recalling the idea without prompts was difficult.", "guided_recall")
     if assessment.transfer_score < WEAK_EVIDENCE and assessment.transfer_score <= assessment.explanation_score:
-        return (f"Apply {concept_name} in a changed-condition problem.", "You showed more understanding than you could apply when the conditions changed.")
+        return (f"Apply {concept_name} in a changed-condition problem.", "You showed more understanding than you could apply when the conditions changed.", "transfer_practice")
     if assessment.explanation_score < WEAK_EVIDENCE:
-        return (f"Reconstruct the reasoning behind {concept_name} step by step.", "Your answer needs a clearer explanation of the relationships involved.")
+        return (f"Reconstruct the reasoning behind {concept_name} step by step.", "Your answer needs a clearer explanation of the relationships involved.", "reasoning_reconstruction")
     if assessment.calibration_gap <= -CALIBRATION_MISMATCH:
-        return (f"Verify your {concept_name} reasoning with one challenging example.", "Your evidence is stronger than your confidence suggests.")
-    return (f"Strengthen your {concept_name} model with a counterexample.", "This concept still has an unresolved learning gap.")
+        return (f"Verify your {concept_name} reasoning with one challenging example.", "Your evidence is stronger than your confidence suggests.", "verification")
+    return (f"Strengthen your {concept_name} model with a counterexample.", "This concept still has an unresolved learning gap.", "misconception_repair")
 
 
 def rank_recommendations(rows, gaps, now: datetime | None = None) -> list[dict]:
@@ -74,10 +74,16 @@ def rank_recommendations(rows, gaps, now: datetime | None = None) -> list[dict]:
                  + WEIGHTS["mastery_weakness"] * (1 - assessment.concept_mastery)
                  + _recency(age)
                  + (WEIGHTS["latest_unresolved_continuity"] if assessment.updated_at == latest and unresolved else 0))
-        action, reason = _intervention(assessment, concept.name)
-        ranked.append({"concept_id": concept.id, "concept_name": concept.name, "subject_name": subject.name, "recommended_action": action, "reason": reason, "priority_score": round(score, 2)})
+        action, reason, intervention = _intervention(assessment, concept.name)
+        target_gap = max(active, key=lambda gap: gap.severity, default=None)
+        ranked.append({"concept_id": concept.id, "concept_name": concept.name, "subject_name": subject.name,
+                       "gap_id": getattr(target_gap, "id", None), "action_type": "tutor_remediation" if target_gap else "assessment",
+                       "intervention": intervention if target_gap else "diagnostic_reassessment",
+                       "recommended_action": action, "reason": reason, "priority_score": round(score, 2)})
     return sorted(ranked, key=lambda item: (-item["priority_score"], item["concept_id"]))
 
 
 def empty_recommendation() -> dict:
-    return {"concept_id": None, "concept_name": None, "subject_name": None, "recommended_action": "Start a diagnostic to calibrate your understanding.", "reason": "Complete an assessment to generate an evidence-based next step.", "priority_score": 0}
+    return {"concept_id": None, "concept_name": None, "subject_name": None, "gap_id": None,
+            "action_type": "assessment", "intervention": "diagnostic",
+            "recommended_action": "Start a diagnostic to calibrate your understanding.", "reason": "Complete an assessment to generate an evidence-based next step.", "priority_score": 0}
