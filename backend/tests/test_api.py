@@ -3,7 +3,7 @@ os.environ['DATABASE_URL']='sqlite:///./test_calibrate.db'
 from fastapi.testclient import TestClient
 from app.main import app
 from app.database import Base,engine
-from app.models import User,Subject,Concept,ConceptAssessment,ConceptGap,Question,Attempt
+from app.models import User,Subject,Concept,ConceptAssessment,ConceptGap,Question,Attempt,TutorTurn
 from app.auth import hash_password
 from sqlalchemy.orm import Session
 import pytest
@@ -58,3 +58,17 @@ def test_dashboard_uses_weighted_performance_and_matching_calibration_population
  assert dashboard['overall']['confidence']==pytest.approx(.8)
  assert dashboard['overall']['performance']==pytest.approx(.7425)
  assert dashboard['overall']['calibration_gap']==pytest.approx(.0575)
+def test_tutor_verification_is_attributed_and_preserves_assessment_history(client):
+ r=client.post('/api/auth/register',json={'name':'Learner','email':'history@test.com','password':'Password1!'});token=r.json()['access_token'];headers={'Authorization':f'Bearer {token}'}
+ with Session(engine) as db:
+  user=db.query(User).filter_by(email='history@test.com').one();subject=Subject(name='Physics',description='Physics');db.add(subject);db.flush();concept=Concept(subject_id=subject.id,name="Newton's Laws",description='Forces');db.add(concept);db.flush();question=Question(concept_id=concept.id,type='MCQ',question_text='F=ma?',correct_answer='A',explanation='Force',question_metadata={});db.add(question);db.flush();db.add(Attempt(user_id=user.id,question_id=question.id,answer='B',is_correct=False,confidence=5,explanation='not sure',explanation_score=0));db.commit();uid=user.id;cid=concept.id
+ from app.services.assessment import rebuild
+ with Session(engine) as db:rebuild(db,uid,cid)
+ first=client.post('/api/ai/tutor',headers=headers,json={'concept_id':cid,'message':'It changes because force and mass have a causal relationship, therefore the outcome depends on mass.'});assert first.status_code==200;assert first.json()['action']=='verify'
+ second=client.post('/api/ai/tutor',headers=headers,json={'concept_id':cid,'message':'It changes because the new condition causes a different relationship and therefore a different outcome.'});assert second.status_code==200;assert second.json()['is_complete'] is True
+ progress=client.get('/api/student/progress',headers=headers);assert progress.status_code==200;history=progress.json()['history']
+ assert len(history)==2;assert history[0]['source']=='assessment';assert history[1]['source']=='tutor_verification';assert history[0]['concept_id']==history[1]['concept_id']==cid
+ with Session(engine) as db:
+  verification=db.execute(select(Attempt,Question).join(Question).where(Attempt.user_id==uid,Question.concept_id==cid).order_by(Attempt.id.desc())).first();turn=db.query(TutorTurn).filter_by(user_id=uid,concept_id=cid,is_complete=True).one();profile=db.query(ConceptAssessment).filter_by(user_id=uid,concept_id=cid).one()
+  assert verification[1].question_metadata=={'generated_by':'tutor','tutor_turn_id':turn.id};assert profile.transfer_score==1
+

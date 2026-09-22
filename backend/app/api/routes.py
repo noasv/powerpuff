@@ -6,7 +6,7 @@ from ..models import *
 from ..schemas import *
 from ..auth import *
 from ..ai.real_provider import provider
-from ..services.assessment import rebuild
+from ..services.assessment import assessment_history,rebuild
 from ..services.recommendations import rank_recommendations,empty_recommendation
 from ..analytics.scoring import performance
 router=APIRouter(prefix='/api')
@@ -65,6 +65,21 @@ def student_dashboard(db:Session=Depends(get_db),u=Depends(current_user)):
 def student_concepts(db:Session=Depends(get_db),u=Depends(current_user)):return student_dashboard(db,u)['assessments']
 @router.get('/student/gaps')
 def student_gaps(db:Session=Depends(get_db),u=Depends(current_user)):return student_dashboard(db,u)['gaps']
+@router.get('/student/progress')
+def student_progress(db:Session=Depends(get_db),u=Depends(current_user)):
+ concepts={c.id:c for c in db.scalars(select(Concept)).all()}
+ attempts=db.execute(select(Attempt,Question).join(Question).where(Attempt.user_id==u.id).order_by(Attempt.created_at,Attempt.id)).all()
+ by_concept={}
+ for attempt,question in attempts:by_concept.setdefault(question.concept_id,[]).append((attempt,question))
+ history=[]
+ for concept_id,rows in by_concept.items():
+  concept=concepts.get(concept_id)
+  if not concept:continue
+  history.extend(point|{'concept_id':concept_id,'concept_name':concept.name} for point in assessment_history(rows))
+ history.sort(key=lambda point:(point['created_at'],point['attempt_id']))
+ gaps=db.scalars(select(ConceptGap).where(ConceptGap.user_id==u.id).order_by(ConceptGap.created_at,ConceptGap.id)).all()
+ return {'history':history,'gaps':[{'id':g.id,'concept_id':g.concept_id,'concept_name':concepts[g.concept_id].name,'gap_type':g.gap_type,'severity':g.severity,'evidence':g.evidence,'recommended_action':g.recommended_action,'created_at':g.created_at,'resolved_at':g.resolved_at} for g in gaps if g.concept_id in concepts]}
+
 def tutor_evidence(db:Session,user_id:int,concept:Concept,latest_response:str=''):
  subject=db.get(Subject,concept.subject_id)
  assessment=db.scalar(select(ConceptAssessment).where(ConceptAssessment.user_id==user_id,ConceptAssessment.concept_id==concept.id))
