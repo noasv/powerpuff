@@ -61,6 +61,29 @@ def student_dashboard(db:Session=Depends(get_db),u=Depends(current_user)):
 def student_concepts(db:Session=Depends(get_db),u=Depends(current_user)):return student_dashboard(db,u)['assessments']
 @router.get('/student/gaps')
 def student_gaps(db:Session=Depends(get_db),u=Depends(current_user)):return student_dashboard(db,u)['gaps']
+def tutor_evidence(db:Session,user_id:int,concept:Concept,latest_response:str=''):
+ subject=db.get(Subject,concept.subject_id)
+ assessment=db.scalar(select(ConceptAssessment).where(ConceptAssessment.user_id==user_id,ConceptAssessment.concept_id==concept.id))
+ gaps=db.scalars(select(ConceptGap).where(ConceptGap.user_id==user_id,ConceptGap.concept_id==concept.id,ConceptGap.resolved_at==None)).all()
+ attempts=db.execute(select(Attempt,Question).join(Question).where(Attempt.user_id==user_id,Question.concept_id==concept.id).order_by(Attempt.created_at.desc()).limit(8)).all()
+ turns=list(reversed(db.scalars(select(TutorTurn).where(TutorTurn.user_id==user_id,TutorTurn.concept_id==concept.id).order_by(TutorTurn.created_at.desc()).limit(20)).all()))
+ rows=[(assessment,concept,subject)] if assessment and subject else []
+ recommendation=rank_recommendations(rows,gaps)[0] if rows and gaps else None
+ evidence={'subject':subject.name if subject else '', 'concept':concept.name,'concept_id':concept.id,'concept_description':concept.description,'latest_response':latest_response,
+  'assessment':serialize_assessment(assessment) if assessment else None,
+  'active_concept_gaps':[{'id':g.id,'type':g.gap_type,'severity':g.severity,'evidence':g.evidence,'recommended_action':g.recommended_action} for g in gaps],
+  'detected_concept_gaps':[{'type':g.gap_type,'severity':g.severity,'evidence':g.evidence} for g in gaps],
+  'recommended_intervention':recommendation['intervention'] if recommendation else None,
+  'previous_attempts':[{'question':q.question_text,'question_type':q.type,'student_answer':a.answer,'correct_answer':q.correct_answer,'correctness':a.is_correct,'confidence':a.confidence,'student_explanation':a.explanation,'explanation_score':a.explanation_score} for a,q in attempts],
+  'previous_tutor_turns':[{'student':t.student_message,'tutor':t.tutor_message,'action':t.action,'reasoning_quality':t.reasoning_quality,'verification_task':t.verification_task,'is_complete':t.is_complete} for t in turns]}
+ return evidence,turns,gaps,recommendation
+@router.get('/student/tutor-context')
+def student_tutor_context(concept_id:int,gap_id:int|None=None,db:Session=Depends(get_db),u=Depends(current_user)):
+ concept=db.get(Concept,concept_id)
+ if not concept:raise HTTPException(404,'Concept not found')
+ evidence,turns,gaps,recommendation=tutor_evidence(db,u.id,concept)
+ if gap_id is not None and not any(g.id==gap_id for g in gaps):raise HTTPException(404,'Active concept gap not found')
+ return evidence|{'active_gap_id':gap_id or (recommendation['gap_id'] if recommendation else None),'recommendation':recommendation}
 @router.post('/ai/{kind}')
 async def ai(kind:str,data:TutorRequest|GenerateRequest,db:Session=Depends(get_db),u=Depends(current_user)):
  mapping={'generate-question':'question','analyze-explanation':'analysis','generate-conflict':'conflict','tutor':'tutor'}
@@ -69,16 +92,8 @@ async def ai(kind:str,data:TutorRequest|GenerateRequest,db:Session=Depends(get_d
   if not isinstance(data,TutorRequest):raise HTTPException(422,'Tutor evidence is required')
   concept=db.get(Concept,data.concept_id)
   if not concept:raise HTTPException(404,'Concept not found')
-  subject=db.get(Subject,concept.subject_id)
-  assessment=db.scalar(select(ConceptAssessment).where(ConceptAssessment.user_id==u.id,ConceptAssessment.concept_id==concept.id))
-  gaps=db.scalars(select(ConceptGap).where(ConceptGap.user_id==u.id,ConceptGap.concept_id==concept.id,ConceptGap.resolved_at==None)).all()
-  attempts=db.execute(select(Attempt,Question).join(Question).where(Attempt.user_id==u.id,Question.concept_id==concept.id).order_by(Attempt.created_at.desc()).limit(8)).all()
-  turns=db.scalars(select(TutorTurn).where(TutorTurn.user_id==u.id,TutorTurn.concept_id==concept.id).order_by(TutorTurn.created_at.desc()).limit(20)).all();turns=list(reversed(turns))
-  evidence={'subject':subject.name if subject else '', 'concept':concept.name,'concept_description':concept.description,'latest_response':data.message,
-   'assessment':serialize_assessment(assessment) if assessment else None,
-   'detected_concept_gaps':[{'type':g.gap_type,'severity':g.severity,'evidence':g.evidence} for g in gaps],
-   'previous_attempts':[{'question':q.question_text,'question_type':q.type,'student_answer':a.answer,'correct_answer':q.correct_answer,'correctness':a.is_correct,'confidence':a.confidence,'student_explanation':a.explanation,'explanation_score':a.explanation_score} for a,q in attempts],
-   'previous_tutor_turns':[{'student':t.student_message,'tutor':t.tutor_message,'action':t.action,'reasoning_quality':t.reasoning_quality,'verification_task':t.verification_task} for t in turns]}
+  evidence,turns,gaps,recommendation=tutor_evidence(db,u.id,concept,data.message)
+  if data.gap_id is not None and not any(g.id==data.gap_id for g in gaps):raise HTTPException(404,'Active concept gap not found')
   result=await provider().generate('tutor',evidence)
   validated=TutorResponse.model_validate(result)
   previous_verification=bool(turns and turns[-1].action=='verify' and turns[-1].verification_task)

@@ -3,7 +3,7 @@ os.environ['DATABASE_URL']='sqlite:///./test_calibrate.db'
 from fastapi.testclient import TestClient
 from app.main import app
 from app.database import Base,engine
-from app.models import User
+from app.models import User,Subject,Concept,ConceptAssessment,ConceptGap,Question,Attempt
 from app.auth import hash_password
 from sqlalchemy.orm import Session
 import pytest
@@ -19,3 +19,32 @@ def test_register_login_and_dashboard(client):
  assert client.post('/api/auth/login',json={'email':'learner@test.com','password':'Password1!'}).status_code==200
 def test_teacher_authorization(client):
  r=client.post('/api/auth/register',json={'name':'Learner','email':'learner@test.com','password':'Password1!'});token=r.json()['access_token'];assert client.get('/api/teacher/dashboard',headers={'Authorization':f'Bearer {token}'}).status_code==403
+
+def remediation_setup(client):
+ token=client.post('/api/auth/register',json={'name':'Learner','email':'learner@test.com','password':'Password1!'}).json()['access_token'];headers={'Authorization':f'Bearer {token}'}
+ with Session(engine) as db:
+  physics=Subject(name='Physics',description='Physics');math=Subject(name='Mathematics',description='Math');db.add_all([physics,math]);db.flush()
+  newton=Concept(subject_id=physics.id,name="Newton's Laws",description='Forces and motion');linear=Concept(subject_id=math.id,name='Linear Equations',description='Solve equations');db.add_all([newton,linear]);db.flush()
+  db.add_all([ConceptAssessment(user_id=2,concept_id=newton.id,accuracy=.8,average_confidence=4,recall_score=.7,transfer_score=.1,explanation_score=.7,calibration_gap=.2,concept_mastery=.45,risk_level='FRAGILE'),ConceptAssessment(user_id=2,concept_id=linear.id,accuracy=.9,average_confidence=4,recall_score=.9,transfer_score=.9,explanation_score=.9,calibration_gap=0,concept_mastery=.9,risk_level='MASTERED')]);db.flush()
+  gap=ConceptGap(user_id=2,concept_id=newton.id,gap_type='TRANSFER_FAILURE',severity=.85,evidence={'transfer':.1},recommended_action='Practice changed conditions.');db.add(gap)
+  old=Question(concept_id=linear.id,type='RECALL',difficulty=.5,question_text='Old linear evidence',correct_answer='x',explanation='linear',question_metadata={});db.add(old);db.flush();db.add(Attempt(user_id=2,question_id=old.id,answer='old algebra answer',is_correct=False,confidence=5,response_time_ms=1,explanation='linear equation reasoning',explanation_score=.1));db.commit();return headers,newton.id,gap.id
+
+def test_tutor_context_is_newtons_laws_and_excludes_linear_evidence(client):
+ headers,concept_id,gap_id=remediation_setup(client)
+ dashboard=client.get('/api/student/dashboard',headers=headers).json();recommendation=dashboard['recommendation']
+ assert recommendation['action_type']=='tutor_remediation' and recommendation['concept_id']==concept_id and recommendation['gap_id']==gap_id
+ context=client.get(f'/api/student/tutor-context?concept_id={concept_id}&gap_id={gap_id}',headers=headers).json()
+ assert context['subject']=='Physics' and context['concept']=="Newton's Laws"
+ assert context['assessment']['transfer_score']==.1 and context['active_concept_gaps'][0]['id']==gap_id
+ assert context['previous_attempts']==[]
+ assert 'Linear Equations' not in str(context) and 'old algebra answer' not in str(context)
+
+def test_successful_tutor_verification_rebuilds_evidence_and_recommendation(client):
+ headers,concept_id,gap_id=remediation_setup(client)
+ first=client.post('/api/ai/tutor',headers=headers,json={'concept_id':concept_id,'gap_id':gap_id,'message':'Because force causes acceleration, the result depends on mass changing.'});assert first.json()['action']=='verify'
+ second=client.post('/api/ai/tutor',headers=headers,json={'concept_id':concept_id,'gap_id':gap_id,'message':'Because the changed mass affects acceleration, therefore the same force causes a different result.'});assert second.json()['is_complete'] is True
+ dashboard=client.get('/api/student/dashboard',headers=headers).json()
+ newton=next(a for a in dashboard['assessments'] if a['concept_id']==concept_id)
+ assert newton['transfer_score']==1
+ assert not any(g['concept_id']==concept_id for g in dashboard['gaps'])
+ assert dashboard['recommendation']['action_type']=='assessment'
