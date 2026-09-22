@@ -7,6 +7,7 @@ from ..schemas import *
 from ..auth import *
 from ..ai.real_provider import provider
 from ..services.assessment import rebuild
+from ..services.recommendations import rank_recommendations,empty_recommendation
 router=APIRouter(prefix='/api')
 @router.post('/auth/register',response_model=Token)
 def register(data:UserCreate,db:Session=Depends(get_db)):
@@ -54,8 +55,8 @@ async def generated(cid:int,kind:str,db:Session=Depends(get_db),u=Depends(curren
 def serialize_assessment(x):return {k:getattr(x,k) for k in ('concept_id','accuracy','average_confidence','recall_score','transfer_score','explanation_score','calibration_gap','concept_mastery','risk_level')}
 @router.get('/student/dashboard')
 def student_dashboard(db:Session=Depends(get_db),u=Depends(current_user)):
- rows=db.execute(select(ConceptAssessment,Concept).join(Concept).where(ConceptAssessment.user_id==u.id)).all(); gaps=db.execute(select(ConceptGap,Concept).join(Concept).where(ConceptGap.user_id==u.id,ConceptGap.resolved_at==None)).all()
- assessments=[serialize_assessment(a)|{'concept_name':c.name} for a,c in rows]; n=max(1,len(rows));return {'user':UserOut.model_validate(u),'overall':{'confidence':sum(a.average_confidence/5 for a,c in rows)/n,'performance':sum((a.accuracy+a.recall_score+a.transfer_score+a.explanation_score)/4 for a,c in rows)/n,'calibration_gap':sum(a.calibration_gap for a,c in rows)/n,'mastery':sum(a.concept_mastery for a,c in rows)/n},'assessments':assessments,'gaps':[{'id':g.id,'concept_id':g.concept_id,'concept_name':c.name,'gap_type':g.gap_type,'severity':g.severity,'evidence':g.evidence,'recommended_action':g.recommended_action} for g,c in gaps],'recommendation':('Practice '+gaps[0][1].name+' with guided recall') if gaps else 'Start a diagnostic to calibrate your understanding.'}
+ rows=db.execute(select(ConceptAssessment,Concept,Subject).join(Concept,Concept.id==ConceptAssessment.concept_id).join(Subject,Subject.id==Concept.subject_id).where(ConceptAssessment.user_id==u.id)).all(); gap_models=db.scalars(select(ConceptGap).where(ConceptGap.user_id==u.id,ConceptGap.resolved_at==None)).all(); concepts={c.id:c for _,c,_ in rows}
+ assessments=[serialize_assessment(a)|{'concept_name':c.name} for a,c,s in rows]; ranked=rank_recommendations(rows,gap_models); gaps=sorted(gap_models,key=lambda g:next((i for i,r in enumerate(ranked) if r['concept_id']==g.concept_id),len(ranked))); n=max(1,len(rows));return {'user':UserOut.model_validate(u),'overall':{'confidence':sum(a.average_confidence/5 for a,c,s in rows)/n,'performance':sum((a.accuracy+a.recall_score+a.transfer_score+a.explanation_score)/4 for a,c,s in rows)/n,'calibration_gap':sum(a.calibration_gap for a,c,s in rows)/n,'mastery':sum(a.concept_mastery for a,c,s in rows)/n},'assessments':assessments,'gaps':[{'id':g.id,'concept_id':g.concept_id,'concept_name':concepts[g.concept_id].name,'gap_type':g.gap_type,'severity':g.severity,'evidence':g.evidence,'recommended_action':g.recommended_action} for g in gaps if g.concept_id in concepts],'recommendation':ranked[0] if ranked else empty_recommendation()}
 @router.get('/student/concepts')
 def student_concepts(db:Session=Depends(get_db),u=Depends(current_user)):return student_dashboard(db,u)['assessments']
 @router.get('/student/gaps')
