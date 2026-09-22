@@ -75,9 +75,10 @@ def rank_recommendations(rows, gaps, now: datetime | None = None) -> list[dict]:
                  + _recency(age)
                  + (WEIGHTS["latest_unresolved_continuity"] if assessment.updated_at == latest and unresolved else 0))
         action, reason = _intervention(assessment, concept.name)
-        ranked.append({"concept_id": concept.id, "concept_name": concept.name, "subject_name": subject.name, "recommended_action": action, "reason": reason, "priority_score": round(score, 2)})
+        gap = max(active, key=lambda item: item.severity, default=None)
+        ranked.append({"concept_id": concept.id, "concept_name": concept.name, "subject_name": subject.name, "gap_id": getattr(gap, "id", None) if gap else None, "destination": "tutor" if gap else "assessment", "recommended_action": action, "reason": reason, "priority_score": round(score, 2)})
     return sorted(ranked, key=lambda item: (-item["priority_score"], item["concept_id"]))
 
 
 def empty_recommendation() -> dict:
-    return {"concept_id": None, "concept_name": None, "subject_name": None, "recommended_action": "Start a diagnostic to calibrate your understanding.", "reason": "Complete an assessment to generate an evidence-based next step.", "priority_score": 0}
+    return {"concept_id": None, "concept_name": None, "subject_name": None, "gap_id": None, "destination": "assessment", "recommended_action": "Start a diagnostic to calibrate your understanding.", "reason": "Complete an assessment to generate an evidence-based next step.", "priority_score": 0}

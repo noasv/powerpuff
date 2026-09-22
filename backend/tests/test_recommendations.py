@@ -33,6 +33,12 @@ def gap(concept_id, severity=.8, resolved=False):
     )
 
 
+def persisted_gap(concept_id, gap_id=42, severity=.8):
+    item = gap(concept_id, severity)
+    item.id = gap_id
+    return item
+
+
 def row(item, name, subject_name):
     return item, concept(item.concept_id, name), subject(subject_name)
 
@@ -99,3 +105,12 @@ def test_high_confidence_and_weak_evidence_selects_calibration():
     recommendation = rank_recommendations([row(item, "Momentum", "Physics")], [gap(1)], NOW)[0]
     assert "calibrate" in recommendation["recommended_action"].lower()
     assert "strong confidence" in recommendation["reason"].lower()
+
+
+def test_unresolved_gap_routes_to_tutor_with_gap_and_reassessment_routes_to_assessment():
+    item = assessment(1)
+    targeted = rank_recommendations([row(item, "Momentum", "Physics")], [persisted_gap(1)], NOW)[0]
+    assert (targeted["destination"], targeted["concept_id"], targeted["gap_id"]) == ("tutor", 1, 42)
+    reassessment = rank_recommendations([row(item, "Momentum", "Physics")], [], NOW)[0]
+    assert reassessment["destination"] == "assessment"
+    assert reassessment["gap_id"] is None

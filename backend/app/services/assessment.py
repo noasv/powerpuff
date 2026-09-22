@@ -24,11 +24,15 @@ def _snapshot(rows, historical_mastery=None):
     transfer = average("TRANSFER", average("CONFLICT"))
     explanation = sum(attempt.explanation_score for attempt, _ in rows) / max(1, len(rows))
     confidence = sum(attempt.confidence for attempt, _ in rows) / max(1, len(rows))
-    gap = calibration_gap(confidence, performance(accuracy, recall, transfer, explanation))
+    performance_score = performance(accuracy, recall, transfer, explanation)
+    # Live state and historical replay deliberately share this calculation. The
+    # confidence and performance values both describe exactly these rows.
+    gap = calibration_gap(confidence, performance_score)
     concept_mastery = mastery(accuracy, recall, transfer, explanation, gap, historical_mastery)
     return {
         "accuracy": accuracy,
         "average_confidence": confidence,
+        "performance_score": performance_score,
         "recall_score": recall,
         "transfer_score": transfer,
         "explanation_score": explanation,

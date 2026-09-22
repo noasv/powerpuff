@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.models import Attempt, Concept, ConceptAssessment, ConceptGap, Question, Subject, User
 from app.services.assessment import assessment_history, rebuild
+from app.analytics.scoring import calibration_gap, performance
 
 
 def setup_db():
@@ -83,3 +84,15 @@ def test_resolved_gaps_remain_and_reassessment_has_one_point_per_attempt():
     assert len(history) == len(rows) == 3
     assert len({point["attempt_id"] for point in history}) == 3
     assert db.scalar(select(ConceptAssessment).where(ConceptAssessment.user_id == user.id)).updated_at == history[-1]["created_at"]
+
+
+def test_history_replay_uses_authoritative_weighted_performance_and_calibration():
+    db, user, concept, _ = setup_db();start = datetime(2026, 1, 1, 9)
+    add_attempt(db, user, concept, "MCQ", True, start)
+    add_attempt(db, user, concept, "RECALL", False, start + timedelta(minutes=1))
+    add_attempt(db, user, concept, "TRANSFER", True, start + timedelta(minutes=2))
+    rows = db.execute(select(Attempt, Question).join(Question).where(Attempt.user_id == user.id)).all()
+    latest = assessment_history(rows)[-1]
+    expected = performance(latest["accuracy"], latest["recall_score"], latest["transfer_score"], latest["explanation_score"])
+    assert latest["performance_score"] == expected
+    assert latest["calibration_gap"] == calibration_gap(latest["average_confidence"], expected)

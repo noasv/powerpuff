@@ -6,6 +6,7 @@ from ..models import *
 from ..schemas import *
 from ..auth import *
 from ..ai.real_provider import provider
+from ..analytics.scoring import performance
 from ..services.assessment import assessment_history,rebuild
 from ..services.recommendations import rank_recommendations,empty_recommendation
 router=APIRouter(prefix='/api')
@@ -24,6 +25,16 @@ def me(u=Depends(current_user)):return u
 def delete_me(u=Depends(current_user),db:Session=Depends(get_db)):
  for model in (ConceptGap,ConceptAssessment,Attempt):db.query(model).filter(model.user_id==u.id).delete()
  db.delete(u);db.commit()
+@router.post('/demo/reset')
+def reset_demo(u=Depends(current_user),db:Session=Depends(get_db)):
+ if u.email!='student@demo.com':raise HTTPException(403,'Demo reset is only available for the demo student')
+ tutor_questions=db.scalars(select(Question).join(Attempt).where(Attempt.user_id==u.id,Question.question_metadata['generated_by'].as_string()=='tutor')).all()
+ db.query(TutorTurn).filter(TutorTurn.user_id==u.id).delete()
+ db.query(ConceptGap).filter(ConceptGap.user_id==u.id).delete()
+ db.query(ConceptAssessment).filter(ConceptAssessment.user_id==u.id).delete()
+ db.query(Attempt).filter(Attempt.user_id==u.id).delete()
+ for question in tutor_questions:db.delete(question)
+ db.commit();return {'reset':True}
 @router.get('/subjects')
 def subjects(db:Session=Depends(get_db),u=Depends(current_user)):return db.scalars(select(Subject)).all()
 @router.get('/subjects/{sid}/concepts')
@@ -52,11 +63,13 @@ async def explain(aid:int,data:ExplainRequest,db:Session=Depends(get_db),u=Depen
 async def generated(cid:int,kind:str,db:Session=Depends(get_db),u=Depends(current_user)):
  if kind not in ('recall','conflict'):raise HTTPException(404)
  return await provider().generate(kind if kind=='conflict' else 'question',{'concept_id':cid,'difficulty':.65})
-def serialize_assessment(x):return {k:getattr(x,k) for k in ('concept_id','accuracy','average_confidence','recall_score','transfer_score','explanation_score','calibration_gap','concept_mastery','risk_level','updated_at')}
+def serialize_assessment(x):
+ values={k:getattr(x,k) for k in ('concept_id','accuracy','average_confidence','recall_score','transfer_score','explanation_score','calibration_gap','concept_mastery','risk_level','updated_at')}
+ return values|{'performance_score':performance(x.accuracy,x.recall_score,x.transfer_score,x.explanation_score)}
 @router.get('/student/dashboard')
 def student_dashboard(db:Session=Depends(get_db),u=Depends(current_user)):
  rows=db.execute(select(ConceptAssessment,Concept,Subject).join(Concept,Concept.id==ConceptAssessment.concept_id).join(Subject,Subject.id==Concept.subject_id).where(ConceptAssessment.user_id==u.id)).all(); gap_models=db.scalars(select(ConceptGap).where(ConceptGap.user_id==u.id,ConceptGap.resolved_at==None)).all(); concepts={c.id:c for _,c,_ in rows}
- assessments=[serialize_assessment(a)|{'concept_name':c.name} for a,c,s in rows]; ranked=rank_recommendations(rows,gap_models); gaps=sorted(gap_models,key=lambda g:next((i for i,r in enumerate(ranked) if r['concept_id']==g.concept_id),len(ranked))); n=max(1,len(rows));return {'user':UserOut.model_validate(u),'overall':{'confidence':sum(a.average_confidence/5 for a,c,s in rows)/n,'performance':sum((a.accuracy+a.recall_score+a.transfer_score+a.explanation_score)/4 for a,c,s in rows)/n,'calibration_gap':sum(a.calibration_gap for a,c,s in rows)/n,'mastery':sum(a.concept_mastery for a,c,s in rows)/n},'assessments':assessments,'gaps':[{'id':g.id,'concept_id':g.concept_id,'concept_name':concepts[g.concept_id].name,'gap_type':g.gap_type,'severity':g.severity,'evidence':g.evidence,'recommended_action':g.recommended_action} for g in gaps if g.concept_id in concepts],'recommendation':ranked[0] if ranked else empty_recommendation()}
+ assessments=[serialize_assessment(a)|{'concept_name':c.name} for a,c,s in rows]; ranked=rank_recommendations(rows,gap_models); gaps=sorted(gap_models,key=lambda g:next((i for i,r in enumerate(ranked) if r['concept_id']==g.concept_id),len(ranked))); n=max(1,len(rows));return {'user':UserOut.model_validate(u),'overall':{'confidence':sum(a.average_confidence/5 for a,c,s in rows)/n,'performance':sum(performance(a.accuracy,a.recall_score,a.transfer_score,a.explanation_score) for a,c,s in rows)/n,'calibration_gap':sum(a.calibration_gap for a,c,s in rows)/n,'mastery':sum(a.concept_mastery for a,c,s in rows)/n},'assessments':assessments,'gaps':[{'id':g.id,'concept_id':g.concept_id,'concept_name':concepts[g.concept_id].name,'gap_type':g.gap_type,'severity':g.severity,'evidence':g.evidence,'recommended_action':g.recommended_action} for g in gaps if g.concept_id in concepts],'recommendation':ranked[0] if ranked else empty_recommendation()}
 @router.get('/student/concepts')
 def student_concepts(db:Session=Depends(get_db),u=Depends(current_user)):return student_dashboard(db,u)['assessments']
 @router.get('/student/gaps')

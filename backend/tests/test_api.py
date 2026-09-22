@@ -34,3 +34,13 @@ def test_tutor_verification_is_attributed_and_preserves_assessment_history(clien
  with Session(engine) as db:
   verification=db.execute(select(Attempt,Question).join(Question).where(Attempt.user_id==uid,Question.concept_id==cid).order_by(Attempt.id.desc())).first();turn=db.query(TutorTurn).filter_by(user_id=uid,concept_id=cid,is_complete=True).one();profile=db.query(ConceptAssessment).filter_by(user_id=uid,concept_id=cid).one()
   assert verification[1].question_metadata=={'generated_by':'tutor','tutor_turn_id':turn.id};assert profile.transfer_score==1
+
+def test_demo_reset_is_restricted_and_clears_history(client):
+ learner=client.post('/api/auth/register',json={'name':'Learner','email':'regular@test.com','password':'Password1!'}).json()['access_token']
+ assert client.post('/api/demo/reset',headers={'Authorization':f'Bearer {learner}'}).status_code==403
+ with Session(engine) as db:
+  demo=User(name='Demo Student',email='student@demo.com',password_hash=hash_password('Demo123!'));db.add(demo);db.flush();subject=Subject(name='Demo',description='Demo');db.add(subject);db.flush();concept=Concept(subject_id=subject.id,name='Demo concept',description='Demo');db.add(concept);db.flush();question=Question(concept_id=concept.id,type='MCQ',question_text='Demo?',correct_answer='A',explanation='Demo',question_metadata={});db.add(question);db.flush();db.add(Attempt(user_id=demo.id,question_id=question.id,answer='B',is_correct=False,confidence=5,explanation='',explanation_score=0));db.commit();demo_id=demo.id;concept_id=concept.id
+ from app.services.assessment import rebuild
+ with Session(engine) as db:rebuild(db,demo_id,concept_id)
+ token=client.post('/api/auth/login',json={'email':'student@demo.com','password':'Demo123!'}).json()['access_token'];response=client.post('/api/demo/reset',headers={'Authorization':f'Bearer {token}'});assert response.status_code==200
+ with Session(engine) as db:assert db.query(Attempt).filter_by(user_id=demo_id).count()==0;assert db.query(ConceptAssessment).filter_by(user_id=demo_id).count()==0
