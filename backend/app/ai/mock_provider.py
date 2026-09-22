@@ -1,0 +1,10 @@
+from .provider import AIProvider
+class MockAIProvider(AIProvider):
+ async def generate(self,kind,p):
+  if kind=='analysis':
+   text=(p.get('explanation') or '').lower(); terms=sum(x in text for x in ['because','therefore','force','mass','acceleration','relationship']); score=min(.95,.25+terms*.11+min(len(text),240)/800)
+   return {'concept_understanding':score,'causal_reasoning':max(.2,score-.08),'use_of_terms':score,'logical_consistency':score,'memorized_language':max(0,.7-score),'misconceptions':[] if score>.6 else ['Relationship is stated without a causal explanation'],'missing_components':[] if score>.7 else ['Explain how changing one variable affects another'],'overall_score':round(score,2)}
+  if kind=='conflict': return {'question':'A student says doubling mass while force stays constant doubles acceleration. Find and explain the mistake.','type':'CONFLICT','concept_id':p['concept_id'],'difficulty':.72,'correct_answer':'Acceleration halves because a = F/m.','explanation':'With constant force, acceleration is inversely proportional to mass.','trap_type':'CHANGED_CONDITIONS'}
+  if kind=='question': return {'question':'Without a formula list, describe the causal relationship in this concept.','type':'RECALL','concept_id':p['concept_id'],'difficulty':p.get('difficulty',.5),'correct_answer':'A complete causal relationship','explanation':'Recall requires producing the relationship without choices.','trap_type':None}
+  step=p.get('step',1); responses=['Before calculating, what relationship did you assume?','Which quantity stays constant in this situation?','Hint: compare the variables using the defining relationship.','Can you construct a counterexample to your first rule?','Now revise your reasoning in one or two sentences.','Good revision. Explain why the change occurs, not only what occurs.','Apply that model to a fresh case: what changes if the input doubles?','Verification ready: answer the new task without a formula list.']
+  return {'message':responses[min(step-1,7)],'step':step,'is_complete':step>=8,'mode':'demo'}
