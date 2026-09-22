@@ -8,6 +8,8 @@ services:
       DATABASE_URL: sqlite:////data/calibrate.db
       JWT_SECRET: ${JWT_SECRET:-local-demo-secret-change-in-production}
       AI_API_KEY: ${AI_API_KEY:-}
+      AI_BASE_URL: ${AI_BASE_URL:-https://api.openai.com/v1}
+      AI_MODEL: ${AI_MODEL:-gpt-4o-mini}
     volumes: ["calibrate-data:/data"]
   frontend:
     image: node:22-alpine

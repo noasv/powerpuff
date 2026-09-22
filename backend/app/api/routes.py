@@ -61,9 +61,35 @@ def student_concepts(db:Session=Depends(get_db),u=Depends(current_user)):return 
 @router.get('/student/gaps')
 def student_gaps(db:Session=Depends(get_db),u=Depends(current_user)):return student_dashboard(db,u)['gaps']
 @router.post('/ai/{kind}')
-async def ai(kind:str,data:TutorRequest|GenerateRequest,u=Depends(current_user)):
+async def ai(kind:str,data:TutorRequest|GenerateRequest,db:Session=Depends(get_db),u=Depends(current_user)):
  mapping={'generate-question':'question','analyze-explanation':'analysis','generate-conflict':'conflict','tutor':'tutor'}
  if kind not in mapping:raise HTTPException(404)
+ if kind=='tutor':
+  if not isinstance(data,TutorRequest):raise HTTPException(422,'Tutor evidence is required')
+  concept=db.get(Concept,data.concept_id)
+  if not concept:raise HTTPException(404,'Concept not found')
+  subject=db.get(Subject,concept.subject_id)
+  assessment=db.scalar(select(ConceptAssessment).where(ConceptAssessment.user_id==u.id,ConceptAssessment.concept_id==concept.id))
+  gaps=db.scalars(select(ConceptGap).where(ConceptGap.user_id==u.id,ConceptGap.concept_id==concept.id,ConceptGap.resolved_at==None)).all()
+  attempts=db.execute(select(Attempt,Question).join(Question).where(Attempt.user_id==u.id,Question.concept_id==concept.id).order_by(Attempt.created_at.desc()).limit(8)).all()
+  turns=db.scalars(select(TutorTurn).where(TutorTurn.user_id==u.id,TutorTurn.concept_id==concept.id).order_by(TutorTurn.created_at.desc()).limit(20)).all();turns=list(reversed(turns))
+  evidence={'subject':subject.name if subject else '', 'concept':concept.name,'concept_description':concept.description,'latest_response':data.message,
+   'assessment':serialize_assessment(assessment) if assessment else None,
+   'detected_concept_gaps':[{'type':g.gap_type,'severity':g.severity,'evidence':g.evidence} for g in gaps],
+   'previous_attempts':[{'question':q.question_text,'question_type':q.type,'student_answer':a.answer,'correct_answer':q.correct_answer,'correctness':a.is_correct,'confidence':a.confidence,'student_explanation':a.explanation,'explanation_score':a.explanation_score} for a,q in attempts],
+   'previous_tutor_turns':[{'student':t.student_message,'tutor':t.tutor_message,'action':t.action,'reasoning_quality':t.reasoning_quality,'verification_task':t.verification_task} for t in turns]}
+  result=await provider().generate('tutor',evidence)
+  validated=TutorResponse.model_validate(result)
+  previous_verification=bool(turns and turns[-1].action=='verify' and turns[-1].verification_task)
+  # Completion is an evidence claim, not a turn counter: require a prior transfer task and strong evaluated reasoning.
+  if validated.is_complete and not (previous_verification and validated.action=='evaluate_verification' and validated.reasoning_quality=='strong'):
+   validated.is_complete=False
+  turn=TutorTurn(user_id=u.id,concept_id=concept.id,student_message=data.message,tutor_message=validated.message,action=validated.action,reasoning_quality=validated.reasoning_quality,verification_task=validated.verification_task,is_complete=validated.is_complete,provider_mode=validated.provider_mode);db.add(turn)
+  if validated.is_complete:
+   verification=Question(concept_id=concept.id,type='TRANSFER',difficulty=.75,question_text=turns[-1].verification_task,correct_answer='Demonstrated causal transfer',explanation='Tutor-validated explanation under changed conditions.',question_metadata={'generated_by':'tutor'})
+   db.add(verification);db.flush();db.add(Attempt(user_id=u.id,question_id=verification.id,answer=data.message,is_correct=True,confidence=3,response_time_ms=0,explanation=data.message,explanation_score=1.0));db.commit();rebuild(db,u.id,concept.id)
+  else:db.commit()
+  return validated.model_dump()
  return await provider().generate(mapping[kind],data.model_dump())
 @router.get('/teacher/dashboard')
 def teacher_dashboard(db:Session=Depends(get_db),u=Depends(teacher)):
