@@ -8,6 +8,7 @@ from ..auth import *
 from ..ai.real_provider import provider
 from ..services.assessment import rebuild
 from ..services.recommendations import rank_recommendations,empty_recommendation
+from ..analytics.scoring import performance,confidence_score
 router=APIRouter(prefix='/api')
 @router.post('/auth/register',response_model=Token)
 def register(data:UserCreate,db:Session=Depends(get_db)):
@@ -52,11 +53,19 @@ async def explain(aid:int,data:ExplainRequest,db:Session=Depends(get_db),u=Depen
 async def generated(cid:int,kind:str,db:Session=Depends(get_db),u=Depends(current_user)):
  if kind not in ('recall','conflict'):raise HTTPException(404)
  return await provider().generate(kind if kind=='conflict' else 'question',{'concept_id':cid,'difficulty':.65})
-def serialize_assessment(x):return {k:getattr(x,k) for k in ('concept_id','accuracy','average_confidence','recall_score','transfer_score','explanation_score','calibration_gap','concept_mastery','risk_level')}
+def assessment_metrics(x):
+ # Derive this trio together so dashboards compare the same concept population.
+ confidence=confidence_score(x.average_confidence)
+ demonstrated=performance(x.accuracy,x.recall_score,x.transfer_score,x.explanation_score)
+ return confidence,demonstrated,confidence-demonstrated
+def serialize_assessment(x):
+ result={k:getattr(x,k) for k in ('concept_id','accuracy','average_confidence','recall_score','transfer_score','explanation_score','concept_mastery','risk_level')}
+ _,result['performance'],result['calibration_gap']=assessment_metrics(x)
+ return result
 @router.get('/student/dashboard')
 def student_dashboard(db:Session=Depends(get_db),u=Depends(current_user)):
  rows=db.execute(select(ConceptAssessment,Concept,Subject).join(Concept,Concept.id==ConceptAssessment.concept_id).join(Subject,Subject.id==Concept.subject_id).where(ConceptAssessment.user_id==u.id)).all(); gap_models=db.scalars(select(ConceptGap).where(ConceptGap.user_id==u.id,ConceptGap.resolved_at==None)).all(); concepts={c.id:c for _,c,_ in rows}
- assessments=[serialize_assessment(a)|{'concept_name':c.name} for a,c,s in rows]; ranked=rank_recommendations(rows,gap_models); gaps=sorted(gap_models,key=lambda g:next((i for i,r in enumerate(ranked) if r['concept_id']==g.concept_id),len(ranked))); n=max(1,len(rows));return {'user':UserOut.model_validate(u),'overall':{'confidence':sum(a.average_confidence/5 for a,c,s in rows)/n,'performance':sum((a.accuracy+a.recall_score+a.transfer_score+a.explanation_score)/4 for a,c,s in rows)/n,'calibration_gap':sum(a.calibration_gap for a,c,s in rows)/n,'mastery':sum(a.concept_mastery for a,c,s in rows)/n},'assessments':assessments,'gaps':[{'id':g.id,'concept_id':g.concept_id,'concept_name':concepts[g.concept_id].name,'gap_type':g.gap_type,'severity':g.severity,'evidence':g.evidence,'recommended_action':g.recommended_action} for g in gaps if g.concept_id in concepts],'recommendation':ranked[0] if ranked else empty_recommendation()}
+ assessments=[serialize_assessment(a)|{'concept_name':c.name} for a,c,s in rows]; ranked=rank_recommendations(rows,gap_models); gaps=sorted(gap_models,key=lambda g:next((i for i,r in enumerate(ranked) if r['concept_id']==g.concept_id),len(ranked))); n=max(1,len(rows)); confidence=sum(assessment_metrics(a)[0] for a,c,s in rows)/n; demonstrated=sum(assessment_metrics(a)[1] for a,c,s in rows)/n;return {'user':UserOut.model_validate(u),'overall':{'confidence':confidence,'performance':demonstrated,'calibration_gap':confidence-demonstrated,'mastery':sum(a.concept_mastery for a,c,s in rows)/n},'assessments':assessments,'gaps':[{'id':g.id,'concept_id':g.concept_id,'concept_name':concepts[g.concept_id].name,'gap_type':g.gap_type,'severity':g.severity,'evidence':g.evidence,'recommended_action':g.recommended_action} for g in gaps if g.concept_id in concepts],'recommendation':ranked[0] if ranked else empty_recommendation()}
 @router.get('/student/concepts')
 def student_concepts(db:Session=Depends(get_db),u=Depends(current_user)):return student_dashboard(db,u)['assessments']
 @router.get('/student/gaps')
@@ -97,12 +106,13 @@ def teacher_dashboard(db:Session=Depends(get_db),u=Depends(teacher)):
  students=db.scalars(select(User).where(User.role=='student')).all(); rows=db.execute(select(ConceptAssessment,Concept,User).join(Concept).join(User,User.id==ConceptAssessment.user_id)).all();
  concepts={}
  for a,c,s in rows:
-  x=concepts.setdefault(c.name,{'concept_id':c.id,'concept':c.name,'students':0,'accuracy':0,'confidence':0,'recall':0,'transfer':0,'calibration_gap':0,'risk':'STABLE'});x['students']+=1
-  for key,val in [('accuracy',a.accuracy),('confidence',a.average_confidence/5),('recall',a.recall_score),('transfer',a.transfer_score),('calibration_gap',a.calibration_gap)]:x[key]+=val
+  x=concepts.setdefault(c.name,{'concept_id':c.id,'concept':c.name,'students':0,'accuracy':0,'confidence':0,'performance':0,'recall':0,'transfer':0,'calibration_gap':0,'risk':'STABLE'});x['students']+=1
+  confidence,demonstrated,gap=assessment_metrics(a)
+  for key,val in [('accuracy',a.accuracy),('confidence',confidence),('performance',demonstrated),('recall',a.recall_score),('transfer',a.transfer_score),('calibration_gap',gap)]:x[key]+=val
   if a.risk_level in ('AT RISK','FRAGILE'):x['risk']=a.risk_level
  for x in concepts.values():
-  for k in ('accuracy','confidence','recall','transfer','calibration_gap'):x[k]/=x['students']
- return {'overview':{'students':len(students),'average_mastery':sum(a.concept_mastery for a,c,s in rows)/max(1,len(rows)),'average_calibration':sum(abs(a.calibration_gap) for a,c,s in rows)/max(1,len(rows)),'at_risk_concepts':sum(x['risk']!='STABLE' for x in concepts.values())},'concepts':list(concepts.values()),'students':[{'id':s.id,'name':s.name,'email':s.email,'mastery':sum(a.concept_mastery for a,c,u2 in rows if u2.id==s.id)/max(1,sum(u2.id==s.id for a,c,u2 in rows))} for s in students],'recommendation':'Use recall plus changed-condition transfer activities for fragile concepts.'}
+  for k in ('accuracy','confidence','performance','recall','transfer','calibration_gap'):x[k]/=x['students']
+ return {'overview':{'students':len(students),'average_mastery':sum(a.concept_mastery for a,c,s in rows)/max(1,len(rows)),'average_calibration':sum(abs(assessment_metrics(a)[2]) for a,c,s in rows)/max(1,len(rows)),'at_risk_concepts':sum(x['risk']!='STABLE' for x in concepts.values())},'concepts':list(concepts.values()),'students':[{'id':s.id,'name':s.name,'email':s.email,'mastery':sum(a.concept_mastery for a,c,u2 in rows if u2.id==s.id)/max(1,sum(u2.id==s.id for a,c,u2 in rows))} for s in students],'recommendation':'Use recall plus changed-condition transfer activities for fragile concepts.'}
 @router.get('/teacher/students')
 def students(db:Session=Depends(get_db),u=Depends(teacher)):return db.scalars(select(User).where(User.role=='student')).all()
 @router.get('/teacher/concepts')
