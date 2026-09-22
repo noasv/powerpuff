@@ -88,6 +88,14 @@ Run `python backend/seed.py` from the repository root or `python seed.py` inside
 
 Sign in as the student, choose Physics → Newton's Laws, and complete standard, recall, conflict, and transfer tasks. Each submission updates the database. Open the Tutor for guided intervention, then sign in as the teacher to inspect recalculated class evidence.
 
+To return the demo to a clean, presentation-ready state before a live diagnostic, run:
+
+```bash
+docker compose exec backend python seed.py --reset-demo
+```
+
+The reset removes attempts, calculated concept assessments and gaps, and Tutor turns for the two exact demo-account emails only. It preserves their credentials, all other users and their learning data, and the shared curriculum. Missing canonical curriculum or demo-account rows are recreated, so the command is safe to run repeatedly without duplicating them.
+
 ## Demo Mode and AI configuration
 
 With no `AI_API_KEY`, the entire flow uses `MockAIProvider` and the Tutor shows Demo mode. With a key, `RealAIProvider` requests schema-validated JSON from an OpenAI-compatible endpoint; malformed output receives one repair attempt. Network errors, timeouts, invalid payloads, or provider failures fall back to the evidence-aware mock provider, so diagnostics remain available. Keys stay on the backend.
