@@ -28,15 +28,9 @@ def subject(name):
 
 def gap(concept_id, severity=.8, resolved=False):
     return SimpleNamespace(
-        concept_id=concept_id, severity=severity,
+        id=concept_id * 10, concept_id=concept_id, severity=severity,
         resolved_at=NOW if resolved else None,
     )
-
-
-def persisted_gap(concept_id, gap_id=42, severity=.8):
-    item = gap(concept_id, severity)
-    item.id = gap_id
-    return item
 
 
 def row(item, name, subject_name):
@@ -107,10 +101,16 @@ def test_high_confidence_and_weak_evidence_selects_calibration():
     assert "strong confidence" in recommendation["reason"].lower()
 
 
-def test_unresolved_gap_routes_to_tutor_with_gap_and_reassessment_routes_to_assessment():
-    item = assessment(1)
-    targeted = rank_recommendations([row(item, "Momentum", "Physics")], [persisted_gap(1)], NOW)[0]
-    assert (targeted["destination"], targeted["concept_id"], targeted["gap_id"]) == ("tutor", 1, 42)
-    reassessment = rank_recommendations([row(item, "Momentum", "Physics")], [], NOW)[0]
-    assert reassessment["destination"] == "assessment"
-    assert reassessment["gap_id"] is None
+def test_unresolved_newtons_laws_routes_to_tutor_remediation():
+    newton = assessment(2, recall=.7, transfer=.1, confidence=3, gap=0)
+    recommendation = rank_recommendations([row(newton, "Newton's Laws", "Physics")], [gap(2)], NOW)[0]
+    assert recommendation["action_type"] == "tutor_remediation"
+    assert recommendation["gap_id"] == 20
+    assert recommendation["intervention"] == "transfer_practice"
+
+
+def test_risk_without_unresolved_gap_routes_to_reassessment():
+    newton = assessment(2, risk="FRAGILE")
+    recommendation = rank_recommendations([row(newton, "Newton's Laws", "Physics")], [], NOW)[0]
+    assert recommendation["action_type"] == "assessment"
+    assert recommendation["intervention"] == "diagnostic_reassessment"

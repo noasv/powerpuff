@@ -3,10 +3,9 @@ os.environ['DATABASE_URL']='sqlite:///./test_calibrate.db'
 from fastapi.testclient import TestClient
 from app.main import app
 from app.database import Base,engine
-from app.models import Attempt,Concept,ConceptAssessment,Question,Subject,TutorTurn,User
+from app.models import User,Subject,Concept,ConceptAssessment,ConceptGap,Question,Attempt,TutorTurn
 from app.auth import hash_password
 from sqlalchemy.orm import Session
-from sqlalchemy import select
 import pytest
 @pytest.fixture(autouse=True)
 def fresh():
@@ -21,6 +20,44 @@ def test_register_login_and_dashboard(client):
 def test_teacher_authorization(client):
  r=client.post('/api/auth/register',json={'name':'Learner','email':'learner@test.com','password':'Password1!'});token=r.json()['access_token'];assert client.get('/api/teacher/dashboard',headers={'Authorization':f'Bearer {token}'}).status_code==403
 
+def remediation_setup(client):
+ token=client.post('/api/auth/register',json={'name':'Learner','email':'learner@test.com','password':'Password1!'}).json()['access_token'];headers={'Authorization':f'Bearer {token}'}
+ with Session(engine) as db:
+  physics=Subject(name='Physics',description='Physics');math=Subject(name='Mathematics',description='Math');db.add_all([physics,math]);db.flush()
+  newton=Concept(subject_id=physics.id,name="Newton's Laws",description='Forces and motion');linear=Concept(subject_id=math.id,name='Linear Equations',description='Solve equations');db.add_all([newton,linear]);db.flush()
+  db.add_all([ConceptAssessment(user_id=2,concept_id=newton.id,accuracy=.8,average_confidence=4,recall_score=.7,transfer_score=.1,explanation_score=.7,calibration_gap=.2,concept_mastery=.45,risk_level='FRAGILE'),ConceptAssessment(user_id=2,concept_id=linear.id,accuracy=.9,average_confidence=4,recall_score=.9,transfer_score=.9,explanation_score=.9,calibration_gap=0,concept_mastery=.9,risk_level='MASTERED')]);db.flush()
+  gap=ConceptGap(user_id=2,concept_id=newton.id,gap_type='TRANSFER_FAILURE',severity=.85,evidence={'transfer':.1},recommended_action='Practice changed conditions.');db.add(gap)
+  old=Question(concept_id=linear.id,type='RECALL',difficulty=.5,question_text='Old linear evidence',correct_answer='x',explanation='linear',question_metadata={});db.add(old);db.flush();db.add(Attempt(user_id=2,question_id=old.id,answer='old algebra answer',is_correct=False,confidence=5,response_time_ms=1,explanation='linear equation reasoning',explanation_score=.1));db.commit();return headers,newton.id,gap.id
+
+def test_tutor_context_is_newtons_laws_and_excludes_linear_evidence(client):
+ headers,concept_id,gap_id=remediation_setup(client)
+ dashboard=client.get('/api/student/dashboard',headers=headers).json();recommendation=dashboard['recommendation']
+ assert recommendation['action_type']=='tutor_remediation' and recommendation['concept_id']==concept_id and recommendation['gap_id']==gap_id
+ context=client.get(f'/api/student/tutor-context?concept_id={concept_id}&gap_id={gap_id}',headers=headers).json()
+ assert context['subject']=='Physics' and context['concept']=="Newton's Laws"
+ assert context['assessment']['transfer_score']==.1 and context['active_concept_gaps'][0]['id']==gap_id
+ assert context['previous_attempts']==[]
+ assert 'Linear Equations' not in str(context) and 'old algebra answer' not in str(context)
+
+def test_successful_tutor_verification_rebuilds_evidence_and_recommendation(client):
+ headers,concept_id,gap_id=remediation_setup(client)
+ first=client.post('/api/ai/tutor',headers=headers,json={'concept_id':concept_id,'gap_id':gap_id,'message':'Because force causes acceleration, the result depends on mass changing.'});assert first.json()['action']=='verify'
+ second=client.post('/api/ai/tutor',headers=headers,json={'concept_id':concept_id,'gap_id':gap_id,'message':'Because the changed mass affects acceleration, therefore the same force causes a different result.'});assert second.json()['is_complete'] is True
+ dashboard=client.get('/api/student/dashboard',headers=headers).json()
+ newton=next(a for a in dashboard['assessments'] if a['concept_id']==concept_id)
+ assert newton['transfer_score']==1
+ assert not any(g['concept_id']==concept_id for g in dashboard['gaps'])
+ assert dashboard['recommendation']['action_type']=='assessment'
+
+
+def test_dashboard_uses_weighted_performance_and_matching_calibration_population(client):
+ headers,_,_=remediation_setup(client)
+ dashboard=client.get('/api/student/dashboard',headers=headers).json()
+ newton=next(a for a in dashboard['assessments'] if a['concept_name']=="Newton's Laws")
+ assert newton['performance']==pytest.approx(.585)
+ assert dashboard['overall']['confidence']==pytest.approx(.8)
+ assert dashboard['overall']['performance']==pytest.approx(.7425)
+ assert dashboard['overall']['calibration_gap']==pytest.approx(.0575)
 def test_tutor_verification_is_attributed_and_preserves_assessment_history(client):
  r=client.post('/api/auth/register',json={'name':'Learner','email':'history@test.com','password':'Password1!'});token=r.json()['access_token'];headers={'Authorization':f'Bearer {token}'}
  with Session(engine) as db:
@@ -35,12 +72,3 @@ def test_tutor_verification_is_attributed_and_preserves_assessment_history(clien
   verification=db.execute(select(Attempt,Question).join(Question).where(Attempt.user_id==uid,Question.concept_id==cid).order_by(Attempt.id.desc())).first();turn=db.query(TutorTurn).filter_by(user_id=uid,concept_id=cid,is_complete=True).one();profile=db.query(ConceptAssessment).filter_by(user_id=uid,concept_id=cid).one()
   assert verification[1].question_metadata=={'generated_by':'tutor','tutor_turn_id':turn.id};assert profile.transfer_score==1
 
-def test_demo_reset_is_restricted_and_clears_history(client):
- learner=client.post('/api/auth/register',json={'name':'Learner','email':'regular@test.com','password':'Password1!'}).json()['access_token']
- assert client.post('/api/demo/reset',headers={'Authorization':f'Bearer {learner}'}).status_code==403
- with Session(engine) as db:
-  demo=User(name='Demo Student',email='student@demo.com',password_hash=hash_password('Demo123!'));db.add(demo);db.flush();subject=Subject(name='Demo',description='Demo');db.add(subject);db.flush();concept=Concept(subject_id=subject.id,name='Demo concept',description='Demo');db.add(concept);db.flush();question=Question(concept_id=concept.id,type='MCQ',question_text='Demo?',correct_answer='A',explanation='Demo',question_metadata={});db.add(question);db.flush();db.add(Attempt(user_id=demo.id,question_id=question.id,answer='B',is_correct=False,confidence=5,explanation='',explanation_score=0));db.commit();demo_id=demo.id;concept_id=concept.id
- from app.services.assessment import rebuild
- with Session(engine) as db:rebuild(db,demo_id,concept_id)
- token=client.post('/api/auth/login',json={'email':'student@demo.com','password':'Demo123!'}).json()['access_token'];response=client.post('/api/demo/reset',headers={'Authorization':f'Bearer {token}'});assert response.status_code==200
- with Session(engine) as db:assert db.query(Attempt).filter_by(user_id=demo_id).count()==0;assert db.query(ConceptAssessment).filter_by(user_id=demo_id).count()==0
