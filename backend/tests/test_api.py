@@ -6,6 +6,7 @@ from app.database import Base,engine
 from app.models import User,Subject,Concept,ConceptAssessment,ConceptGap,Question,Attempt,TutorTurn
 from app.auth import hash_password
 from sqlalchemy.orm import Session
+from sqlalchemy import select
 import pytest
 @pytest.fixture(autouse=True)
 def fresh():
@@ -72,3 +73,76 @@ def test_tutor_verification_is_attributed_and_preserves_assessment_history(clien
   verification=db.execute(select(Attempt,Question).join(Question).where(Attempt.user_id==uid,Question.concept_id==cid).order_by(Attempt.id.desc())).first();turn=db.query(TutorTurn).filter_by(user_id=uid,concept_id=cid,is_complete=True).one();profile=db.query(ConceptAssessment).filter_by(user_id=uid,concept_id=cid).one()
   assert verification[1].question_metadata=={'generated_by':'tutor','tutor_turn_id':turn.id};assert profile.transfer_score==1
 
+
+def test_teacher_can_view_selected_student_evidence(client):
+    learner = client.post(
+        '/api/auth/register',
+        json={
+            'name': 'Selected Learner',
+            'email': 'selected@test.com',
+            'password': 'Password1!'
+        }
+    ).json()
+
+    teacher_token = client.post(
+        '/api/auth/login',
+        json={
+            'email': 'teacher@test.com',
+            'password': 'Password1!'
+        }
+    ).json()['access_token']
+
+    with Session(engine) as db:
+        student = db.query(User).filter(User.email == 'selected@test.com').one()
+        concept = Concept(
+            subject_id=db.query(Subject).first().id
+            if db.query(Subject).first()
+            else 1,
+            name='Teacher Detail Concept',
+            description='Evidence visible to teacher'
+        )
+
+        if not db.query(Subject).first():
+            subject = Subject(name='Science', description='Science')
+            db.add(subject)
+            db.flush()
+            concept.subject_id = subject.id
+
+        db.add(concept)
+        db.flush()
+
+        db.add(ConceptAssessment(
+            user_id=student.id,
+            concept_id=concept.id,
+            accuracy=.8,
+            average_confidence=4,
+            recall_score=.6,
+            transfer_score=.4,
+            explanation_score=.7,
+            calibration_gap=0,
+            concept_mastery=.65,
+            risk_level='FRAGILE'
+        ))
+        db.commit()
+        student_id = student.id
+
+    response = client.get(
+        f'/api/teacher/students/{student_id}',
+        headers={'Authorization': f'Bearer {teacher_token}'}
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data['user']['id'] == student_id
+    assert data['user']['name'] == 'Selected Learner'
+    assert len(data['assessments']) == 1
+
+    assessment = data['assessments'][0]
+    assert assessment['concept_name'] == 'Teacher Detail Concept'
+    assert assessment['performance'] == pytest.approx(
+        .35 * .8 + .25 * .6 + .25 * .4 + .15 * .7
+    )
+    assert assessment['calibration_gap'] == pytest.approx(
+        .8 - assessment['performance']
+    )
