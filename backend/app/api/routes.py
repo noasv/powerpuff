@@ -124,9 +124,9 @@ async def ai(kind:str,data:TutorRequest|GenerateRequest,db:Session=Depends(get_d
   # Completion is an evidence claim, not a turn counter: require a prior transfer task and strong evaluated reasoning.
   if validated.is_complete and not (previous_verification and validated.action=='evaluate_verification' and validated.reasoning_quality=='strong'):
    validated.is_complete=False
-  turn=TutorTurn(user_id=u.id,concept_id=concept.id,student_message=data.message,tutor_message=validated.message,action=validated.action,reasoning_quality=validated.reasoning_quality,verification_task=validated.verification_task,is_complete=validated.is_complete,provider_mode=validated.provider_mode);db.add(turn)
+  turn=TutorTurn(user_id=u.id,concept_id=concept.id,student_message=data.message,tutor_message=validated.message,action=validated.action,reasoning_quality=validated.reasoning_quality,verification_task=validated.verification_task,is_complete=validated.is_complete,provider_mode=validated.provider_mode);db.add(turn);db.flush()
   if validated.is_complete:
-   verification=Question(concept_id=concept.id,type='TRANSFER',difficulty=.75,question_text=turns[-1].verification_task,correct_answer='Demonstrated causal transfer',explanation='Tutor-validated explanation under changed conditions.',question_metadata={'generated_by':'tutor'})
+   verification=Question(concept_id=concept.id,type='TRANSFER',difficulty=.75,question_text=turns[-1].verification_task,correct_answer='Demonstrated causal transfer',explanation='Tutor-validated explanation under changed conditions.',question_metadata={'generated_by':'tutor','tutor_turn_id':turn.id})
    db.add(verification);db.flush();db.add(Attempt(user_id=u.id,question_id=verification.id,answer=data.message,is_correct=True,confidence=3,response_time_ms=0,explanation=data.message,explanation_score=1.0));db.commit();rebuild(db,u.id,concept.id)
   else:db.commit()
   return validated.model_dump()

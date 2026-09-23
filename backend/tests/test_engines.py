@@ -3,7 +3,7 @@ from app.services.adaptive import next_action
 from app.services.gaps import detect
 from app.ai.mock_provider import MockAIProvider
 from app.ai.real_provider import RealAIProvider
-import pytest,asyncio
+import pytest,asyncio,httpx
 def test_calibration_large_positive_gap():
  score=performance(1,.4,.3,.5);assert calibration_gap(5,score)>.35
 def test_calibration_near_zero(): assert abs(calibration_gap(3,.6))<.01
@@ -49,3 +49,26 @@ def test_frontend_never_references_backend_api_secret():
  from pathlib import Path
  frontend=Path(__file__).parents[2]/'frontend'/'src'
  assert all('AI_API_KEY' not in path.read_text() for path in frontend.rglob('*') if path.is_file())
+
+def test_real_provider_retries_then_falls_back_on_network_failure(monkeypatch):
+ calls={'count':0}
+
+ class Client:
+  def __init__(self,*a,**k):pass
+  async def __aenter__(self):return self
+  async def __aexit__(self,*a):pass
+  async def post(self,*a,**k):
+   calls['count']+=1
+   raise httpx.ConnectError("simulated network failure")
+
+ monkeypatch.setattr('app.ai.real_provider.httpx.AsyncClient',Client)
+
+ result=asyncio.run(RealAIProvider().generate(
+  'tutor',
+  {'latest_response':'I do not know'}
+ ))
+
+ assert calls['count']==2
+ assert result['provider_mode']=='demo'
+ assert result['message']
+ assert result['is_complete'] is False
