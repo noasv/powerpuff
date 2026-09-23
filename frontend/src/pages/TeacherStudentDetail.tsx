@@ -91,7 +91,7 @@ export default function TeacherStudentDetail(){
           :<Empty text="This student has no assessment evidence yet."/>}
       </section>
 
-      <section className="panel">
+      <section className="panel wide teacher-risk-panel">
         <h2>Active learning risks</h2>
         {data.gaps.length?
           data.gaps.map(g=>
